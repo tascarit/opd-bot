@@ -41,9 +41,8 @@ CREATE TABLE IF NOT EXISTS users (
     age INTEGER,
     city TEXT,
     gender TEXT,
-    distance_km INTEGER,
-    is_online INTEGER,
-    about TEXT
+    about TEXT,
+    hobby TEXT
 );
 
 CREATE TABLE IF NOT EXISTS interests (
@@ -141,9 +140,9 @@ def get_interest_id(title: str):
     r = cursor.fetchone()
     return r[0] if r else None
 
-def add_user(name, age, city, gender, distance_km, is_online, about=""):
-    cursor.execute("INSERT INTO users (name, age, city, gender, distance_km, is_online, about) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                   (name, age, city, gender, distance_km, int(is_online), about))
+def add_user(tg_id, name, age, city, gender, about, hobby):
+    cursor.execute("INSERT INTO users (tg_id, name, age, city, gender, about, hobby) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                   (tg_id, name, age, city, gender, about, hobby))
     conn.commit()
     return cursor.lastrowid
 
@@ -537,10 +536,7 @@ def get_user_id_by_tg(tg_id: int) -> int:
     r = cursor.fetchone()
     if r:
         return r[0]
-    # Если пользователя нет — можно создать "пустого" профиля
-    cursor.execute("INSERT INTO users (tg_id, name, age, city, gender, distance_km, is_online, about) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                   (tg_id, "Аноним", 18, "Не указан", "Н", 0, 1, ""))
-    conn.commit()
+    add_user(tg_id, "Аноним", 18, "Не указан", "Не указан", "Не указано", "Не указано")
     return cursor.lastrowid
 
 # ---------------------------
@@ -589,6 +585,7 @@ def profile_kb():
     builder.button(text="🗒️ Изменить информацию о себе", callback_data="change_about")
     builder.button(text="📝 Изменить имя", callback_data="change_name")
     builder.button(text="🌻 Изменить возраст",callback_data="change_age")
+    builder.button(text="🏓 Изменить хобби", callback_data="change_hobby")
     builder.button(text="⬅️ Назад", callback_data="start")
 
     builder.adjust(2,2,1)
@@ -636,15 +633,16 @@ async def change_msg(message: types.Message, state: FSMContext):
 @dp.callback_query(lambda c: c.data == "profile")
 async def cb_profile(call: types.CallbackQuery):
     id = get_user_id_by_tg(call.from_user.id)
-    data = cursor.execute("SELECT name, age, city, gender, about FROM users WHERE id = ?", (id,)).fetchone()
+    data = cursor.execute("SELECT name, age, city, gender, about, hobby FROM users WHERE id = ?", (id,)).fetchone()
 
     name = data[0]
     age = data[1]
     city = data[2]
     gender = data[3]
     about = data[4]
+    hobby = data[5]
 
-    msg = Text(Bold("Ваш профиль:\n\n"), "◦ Имя: ", Italic(name), "\n◦ Возраст: ", Italic(str(age)), "\n◦ Город: ", Italic(city), "\n◦ Пол: ", Italic(gender), "\n◦ Обо мне: ", Italic(about))
+    msg = Text(Bold("Ваш профиль:\n\n"), "◦ Имя: ", Italic(name), "\n◦ Возраст: ", Italic(str(age)), "\n◦ Город: ", Italic(city), "\n◦ Пол: ", Italic(gender), "\n◦ Обо мне: ", Italic(about), "\n◦Хобби: ", Italic(hobby))
 
     await call.message.edit_text(reply_markup=profile_kb(), **msg.as_kwargs())
 
@@ -681,6 +679,13 @@ async def cb_change_about(call: types.CallbackQuery, state: FSMContext):
     await call.message.answer("Введите информацию о себе")
     await state.update_data(query="about")
     await state.update_data(msg="Информация о вас была успешно изменена!")
+    await state.set_state(ChangeState.wait_for_message)
+
+@dp.callback_query(lambda c: c.data == "change_hobby")
+async def cb_change_about(call: types.CallbackQuery, state: FSMContext):
+    await call.message.answer("Введите хобби через запятую: ")
+    await state.update_data(query="hobby")
+    await state.update_data(msg="Ваше хобби было успешно изменено!")
     await state.set_state(ChangeState.wait_for_message)
 
 @dp.callback_query(lambda c: c.data == "search_menu")
