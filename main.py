@@ -7,12 +7,12 @@ from typing import List, Set, Tuple
 import asyncio
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.filters import Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
-from aiogram.utils.formatting import Text, Bold, Code
+from aiogram.utils.formatting import Text, Bold, Code, Italic
 
 # ---------------------------
 # Настройки
@@ -188,7 +188,7 @@ async def cb_group_messages(call: types.CallbackQuery, state: FSMContext):
 
     for message in messages:
         id, msg = message
-        uname = cursor.execute("SELECT name FROM users WHERE id = ?", (id,)).fetchone()[0][0]
+        uname = cursor.execute("SELECT name FROM users WHERE id = ?", (id,)).fetchone()[0]
         txt = Text(Bold(uname), ": ", Code(msg), "\n\n")
         end_message = Text(end_message, txt)
 
@@ -539,7 +539,7 @@ def get_user_id_by_tg(tg_id: int) -> int:
         return r[0]
     # Если пользователя нет — можно создать "пустого" профиля
     cursor.execute("INSERT INTO users (tg_id, name, age, city, gender, distance_km, is_online, about) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                   (tg_id, "Новый пользователь", 18, "Не указан", "М", 0, 1, ""))
+                   (tg_id, "Аноним", 18, "Не указан", "Н", 0, 1, ""))
     conn.commit()
     return cursor.lastrowid
 
@@ -552,9 +552,11 @@ def main_menu_kb():
     builder.button(text="💫 Поиск людей", callback_data="search_menu")
     builder.button(text="💫 Точный поиск", callback_data="accurate_search")
     builder.button(text="🎯 Режимы поиска", callback_data="modes_menu")
-    builder.button(text="🗺 Люди на карте", callback_data="people_map")
+    builder.button(text="😀 Мой профиль", callback_data="profile")
     builder.button(text="👥 Группы и события", callback_data="groups_events")
     builder.button(text="⭐ Избранное", callback_data="favorites")
+
+    builder.adjust(2,2,1)
 
     return builder.as_markup()
 
@@ -579,6 +581,19 @@ def pager_kb(prev_token: str = None, next_token: str = None):
     builder.button(text="🔄 Обновить", callback_data="refresh")
     return builder.as_markup()
     
+def profile_kb():
+    builder = InlineKeyboardBuilder()
+
+    builder.button(text="🟢 Изменить пол", callback_data="change_gender", )
+    builder.button(text="🏙️ Изменить город", callback_data="change_city")
+    builder.button(text="🗒️ Изменить информацию о себе", callback_data="change_about")
+    builder.button(text="📝 Изменить имя", callback_data="change_name")
+    builder.button(text="🌻 Изменить возраст",callback_data="change_age")
+    builder.button(text="⬅️ Назад", callback_data="start")
+
+    builder.adjust(2,2,1)
+
+    return builder.as_markup()
 
 # ---------------------------
 # Обработчики команд / callback
@@ -591,9 +606,82 @@ async def cmd_start(message: types.Message):
         reply_markup=main_menu_kb()
     )
 
+@dp.callback_query(lambda c: c.data == "start")
+async def cb_start(call: types.CallbackQuery):
+    await call.message.edit_text(text=
+        "💫 Добро пожаловать! Выберите раздел:",
+        reply_markup=main_menu_kb()
+    )
+
 @dp.callback_query(lambda c: c.data == "group_info")
 async def cb_group_info(call: types.CallbackQuery, state: FSMContext):
     my_id = get_user_id_by_tg(call.from_user.id)
+
+class ChangeState(StatesGroup):
+    wait_for_message = State()
+
+@dp.message(ChangeState.wait_for_message)
+async def change_msg(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    query = data["query"]
+    msg = data["msg"]
+    id = get_user_id_by_tg(message.from_user.id)
+    edit = message.text
+
+    cursor.execute(f"UPDATE users SET {query} = ? WHERE id = ?", (edit, id,))
+    conn.commit()
+
+    await message.answer(msg)
+
+@dp.callback_query(lambda c: c.data == "profile")
+async def cb_profile(call: types.CallbackQuery):
+    id = get_user_id_by_tg(call.from_user.id)
+    data = cursor.execute("SELECT name, age, city, gender, about FROM users WHERE id = ?", (id,)).fetchone()
+
+    name = data[0]
+    age = data[1]
+    city = data[2]
+    gender = data[3]
+    about = data[4]
+
+    msg = Text(Bold("Ваш профиль:\n\n"), "◦ Имя: ", Italic(name), "\n◦ Возраст: ", Italic(str(age)), "\n◦ Город: ", Italic(city), "\n◦ Пол: ", Italic(gender), "\n◦ Обо мне: ", Italic(about))
+
+    await call.message.edit_text(reply_markup=profile_kb(), **msg.as_kwargs())
+
+@dp.callback_query(lambda c: c.data == "change_gender")
+async def cb_change_gender(call: types.CallbackQuery, state: FSMContext):
+    await call.message.answer("Введите ваш пол")
+    await state.update_data(query="gender")
+    await state.update_data(msg="Ваш пол был успешно изменен!")
+    await state.set_state(ChangeState.wait_for_message)
+
+@dp.callback_query(lambda c: c.data == "change_city")
+async def cb_change_city(call: types.CallbackQuery, state: FSMContext):
+    await call.message.answer("Введите ваш город")
+    await state.update_data(query="city")
+    await state.update_data(msg="Ваш город был успешно изменен!")
+    await state.set_state(ChangeState.wait_for_message)
+
+@dp.callback_query(lambda c: c.data == "change_name")
+async def cb_change_name(call: types.CallbackQuery, state: FSMContext):
+    await call.message.answer("Введите ваше имя")
+    await state.update_data(query="name")
+    await state.update_data(msg="Ваше имя было успешно изменено!")
+    await state.set_state(ChangeState.wait_for_message)
+
+@dp.callback_query(lambda c: c.data == "change_age")
+async def cb_change_age(call: types.CallbackQuery, state: FSMContext):
+    await call.message.answer("Введите ваш возраст")
+    await state.update_data(query="age")
+    await state.update_data(msg="Ваш возраст был успешно изменен!")
+    await state.set_state(ChangeState.wait_for_message)
+
+@dp.callback_query(lambda c: c.data == "change_about")
+async def cb_change_about(call: types.CallbackQuery, state: FSMContext):
+    await call.message.answer("Введите информацию о себе")
+    await state.update_data(query="about")
+    await state.update_data(msg="Информация о вас была успешно изменена!")
+    await state.set_state(ChangeState.wait_for_message)
 
 @dp.callback_query(lambda c: c.data == "search_menu")
 async def cb_search_menu(call: types.CallbackQuery):
