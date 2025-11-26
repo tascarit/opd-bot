@@ -161,7 +161,7 @@ def user_interests(user_id) -> Set[str]:
     return {r[0] for r in cursor.fetchall()}
 
 def user_profile_dict(uid: int) -> dict:
-    cursor.execute("SELECT id, name, age, city, gender, distance_km, is_online, about FROM users WHERE id = ?", (uid,))
+    cursor.execute("SELECT id, name, age, city, gender, about FROM users WHERE id = ?", (uid,))
     r = cursor.fetchone()
     if not r:
         return {}
@@ -172,9 +172,7 @@ def user_profile_dict(uid: int) -> dict:
         "age": r[2],
         "city": r[3],
         "gender": r[4],
-        "distance_km": r[5],
-        "is_online": bool(r[6]),
-        "about": r[7] or "",
+        "about": r[5] or "",
         "interests": interests
     }
 
@@ -465,69 +463,56 @@ async def process_group_code(message: types.Message, state: FSMContext):
 # ---------------------------
 # Логика совпадения (score)
 # ---------------------------
-def interest_score(user_ints: Set[str], target_ints: Set[str]) -> int:
-    """
-    Возвращает процент совпадения по интересам (0-100).
-    Логика: (кол-во общих / кол-во уникальных интересов среди обеих сторон) * 100
-    """
-    if not target_ints or not user_ints:
-        return 0
-    common = user_ints.intersection(target_ints)
-    union_count = len(user_ints.union(target_ints))
-    if union_count == 0:
-        return 0
-    score = int(len(common) / union_count * 100)
-    return score
 
-def compute_match_score(uid: int, base_interests: Set[str]) -> Tuple[int, Set[str]]:
-    u_ints = user_interests(uid)
-    score = interest_score(u_ints, base_interests)
-    return score, u_ints
+def check_matches(h1, h2):
+    matches = 0
 
-# ---------------------------
-# Поиск пользователей с фильтрацией
-# ---------------------------
-def search_users_db(
-    current_city: str = "Москва",
-    min_age: int = 18,
-    max_age: int = 100,
-    online_only: bool = False,
-    interest_filters: Set[str] = None,
-    max_distance_km: int = None,
-    gender: str = None
-) -> List[dict]:
-    q = "SELECT id, name, age, city, gender, distance_km, is_online, about FROM users WHERE city = ? AND age BETWEEN ? AND ?"
-    params = [current_city, min_age, max_age]
-    if online_only:
-        q += " AND is_online = 1"
-    if gender and gender in ("М", "Ж"):
-        q += " AND gender = ?"
-        params.append(gender)
-    cursor.execute(q, tuple(params))
-    rows = cursor.fetchall()
-    results = []
-    for r in rows:
-        uid = r[0]
-        dist = r[5]
-        if max_distance_km is not None and dist is not None and dist > max_distance_km:
-            continue
-        ints = user_interests(uid)
-        if interest_filters:
-            # требуем хотя бы одно совпадение
-            if not (ints.intersection(interest_filters)):
-                continue
-        results.append({
-            "id": uid,
-            "name": r[1],
-            "age": r[2],
-            "city": r[3],
-            "gender": r[4],
-            "distance_km": dist,
-            "is_online": bool(r[6]),
-            "about": r[7] or "",
-            "interests": sorted(ints)
-        })
-    return results
+    higher: list = h1 if len(h1) > len(h2) else h2
+    lower: list = h1 if len(h1) < len(h2) else h2
+
+    for i in range(len(lower)):
+        lower[i] = str.lower(lower[i])
+
+    for i in higher:
+        if lower.count(str.lower(i)) > 0: matches+=1
+    
+    return matches
+
+def compare(tg_id1, tg_id2):
+    hobby_raw1 = cursor.execute("SELECT hobby FROM users WHERE tg_id = ?", (tg_id1,)).fetchone()[0]
+    hobby_raw2 = cursor.execute("SELECT hobby FROM users WHERE tg_id = ?", (tg_id2,)).fetchone()[0]
+
+    h1 = hobby_raw1.replace(" ", "").split(",")
+    h2 = hobby_raw2.replace(" ", "").split(",")
+
+    all = len(h1) + len(h2)
+    matches = check_matches(h1,h2)
+
+    comp = int(matches*100/all)
+
+    return comp
+
+def append_match(matched: list, user: tuple, p: int):
+    min = matched[0] if len(matched) > 0 else None
+
+    if not min: return
+
+    for m in matched:
+        if m[0] < min[0]: min = m
+
+    if p > m[0]:
+        matched.remove(min)
+        matched.append({p, user})
+
+def find_matching_users(tg_id, limit=10):
+    all_users = cursor.execute("SELECT name, hobby, tg_id FROM users").fetchall()
+    matched = []
+
+    for user in all_users:
+        p = compare(tg_id, user[2])
+        append_match(matched, user, p)
+
+    return matched
 
 # получение айди
 
@@ -546,8 +531,6 @@ def main_menu_kb():
     builder = InlineKeyboardBuilder()
 
     builder.button(text="💫 Поиск людей", callback_data="search_menu")
-    builder.button(text="💫 Точный поиск", callback_data="accurate_search")
-    builder.button(text="🎯 Режимы поиска", callback_data="modes_menu")
     builder.button(text="😀 Мой профиль", callback_data="profile")
     builder.button(text="👥 Группы и события", callback_data="groups_events")
     builder.button(text="⭐ Избранное", callback_data="favorites")
@@ -592,6 +575,22 @@ def profile_kb():
 
     return builder.as_markup()
 
+def search_kb():
+    builder = InlineKeyboardBuilder()
+
+    builder.button(text="⭐ Начать поиск", callback_data="search")
+    builder.button(text="⬅️ Назад", callback_data="start")
+
+    return builder.as_markup()
+
+def match_kb(id):
+    builder = InlineKeyboardBuilder()
+
+    builder.button(text="📒 Посмотреть профиль", callback_data=f"check_profile_{id}")
+    builder.button(text="⬅️ В меню", callback_data="start")
+
+    return builder.as_markup()
+
 # ---------------------------
 # Обработчики команд / callback
 # ---------------------------
@@ -602,6 +601,45 @@ async def cmd_start(message: types.Message):
         "💫 Добро пожаловать! Выберите раздел:",
         reply_markup=main_menu_kb()
     )
+
+@dp.callback_query(lambda c: c.data == "search_menu")
+async def cb_search_menu(call: types.CallbackQuery):
+    hobby = cursor.execute("SELECT hobby FROM users WHERE tg_id = ?", (call.from_user.id,)).fetchone()[0]
+    msg = Text("💫 ", Bold("Поиск людей"), "\n\n", "Ваши хобби: ", Italic(str(hobby)))
+
+    await call.message.edit_text(reply_markup=search_kb(), **msg.as_kwargs())
+
+@dp.callback_query(lambda c: c.data == "search")
+async def cb_search(call: types.CallbackQuery):
+    await call.message.edit_text(text="Ищем...")
+    matches = find_matching_users(call.from_user.id)
+
+    if len(matches) == 0:
+        await call.message.edit_text(text="Люди не были найдены :(", reply_markup=InlineKeyboardBuilder().button(text="⬅️ Назад", callback_data="start").as_markup())
+        return
+    
+    choice = random.choice(matches)[1]
+    id = choice[2]
+
+    msg = Text(Bold("✅ Поиск завершился успешно!\n\n"), "◦ Имя: ", Italic(choice[0]), "\n◦ Хобби: ", Italic(choice[1]))
+
+    await call.message.edit_text(reply_markup=match_kb(id), **msg.as_kwargs())
+
+@dp.callback_query(lambda c: c.data.startswith("check_profile"))
+async def cb_check_profile(call: types.CallbackQuery):
+    tg_id = call.data.strip("check_profile_")
+    data = cursor.execute("SELECT name, age, city, gender, about, hobby FROM users WHERE id = ?", (tg_id,)).fetchone()
+
+    name = data[0]
+    age = data[1]
+    city = data[2]
+    gender = data[3]
+    about = data[4]
+    hobby = data[5]
+
+    msg = Text(Bold(f"Профиль \"{name}\":\n\n"), "◦ Имя: ", Italic(name), "\n◦ Возраст: ", Italic(str(age)), "\n◦ Город: ", Italic(city), "\n◦ Пол: ", Italic(gender), "\n◦ Обо мне: ", Italic(about), "\n◦ Хобби: ", Italic(hobby))
+
+    await call.message.edit_text(**msg.as_kwargs())
 
 @dp.callback_query(lambda c: c.data == "start")
 async def cb_start(call: types.CallbackQuery):
@@ -642,7 +680,7 @@ async def cb_profile(call: types.CallbackQuery):
     about = data[4]
     hobby = data[5]
 
-    msg = Text(Bold("Ваш профиль:\n\n"), "◦ Имя: ", Italic(name), "\n◦ Возраст: ", Italic(str(age)), "\n◦ Город: ", Italic(city), "\n◦ Пол: ", Italic(gender), "\n◦ Обо мне: ", Italic(about), "\n◦Хобби: ", Italic(hobby))
+    msg = Text(Bold("Ваш профиль:\n\n"), "◦ Имя: ", Italic(name), "\n◦ Возраст: ", Italic(str(age)), "\n◦ Город: ", Italic(city), "\n◦ Пол: ", Italic(gender), "\n◦ Обо мне: ", Italic(about), "\n◦ Хобби: ", Italic(hobby))
 
     await call.message.edit_text(reply_markup=profile_kb(), **msg.as_kwargs())
 
@@ -688,61 +726,6 @@ async def cb_change_about(call: types.CallbackQuery, state: FSMContext):
     await state.update_data(msg="Ваше хобби было успешно изменено!")
     await state.set_state(ChangeState.wait_for_message)
 
-@dp.callback_query(lambda c: c.data == "search_menu")
-async def cb_search_menu(call: types.CallbackQuery):
-    # Быстрый поиск — случайные люди по 1-2 интересам
-    # Подставляем интересы текущего пользователя (для демонстрации возьмём фиксированный набор)
-    my_interests = {"Фотография", "Походы"}  # в реале: user_interests(my_user_id)
-    users = search_users_db(current_city="Москва", min_age=25, max_age=35, online_only=False)
-    # Сортируем по совпадению
-    scored = []
-    for u in users:
-        score, u_ints = compute_match_score(u["id"], my_interests)
-        scored.append((score, u, u_ints))
-    scored.sort(key=lambda x: (-x[0], x[1]["distance_km"] or 999))
-    # Формируем вывод (первые 10)
-    count = len(scored)
-    txt = "💫 ПОИСК ЛЮДЕЙ\n──────────────\n"
-    txt += f"🎯 Быстрый поиск по интересам: найдено {count} человек\n\n"
-    for score, u, u_ints in scored[:12]:
-        txt += f"💫 {u['name']}, {u['age']} лет\n"
-        txt += f"✅ {', '.join(u['interests']) if u['interests'] else '—'}\n"
-        txt += f"📍 В {u['distance_km']} км · ⏰ {'Онлайн' if u['is_online'] else 'Не в сети'}\n"
-        txt += f"Совпадение: {score}%\n\n"
-    txt += "\n[🔍 Уточнить поиск]  [💫 Случайный профиль]"
-    # Отправляем
-    await call.message.edit_text(txt)
-
-@dp.callback_query(lambda c: c.data == "accurate_search")
-async def cb_accurate_search(call: types.CallbackQuery):
-    # Делает точный поиск: в примере — фиксированные параметры, но полный код с фильтрами реализуем текстово
-    # Для упрощения: покажем интерактивный пример "текущие параметры" и выполним поиск
-    params = {
-        "Пол": "Любой",
-        "Возраст": "25-35",
-        "Город": "Москва",
-        "Расстояние": "До 15 км",
-        "Интересы (до 5)": "Фотография, Походы, Йога",
-        "Активность": "Только онлайн"
-    }
-    txt = "💫 ТОЧНЫЙ ПОИСК\n──────────────\n👤 **Основные параметры:**\n"
-    for k, v in params.items():
-        txt += f"_{k}:_ {v}\n"
-    txt += "\nЗапускаю поиск по этим фильтрам...\n\n"
-    # Парсим интересы
-    interest_filters = {"Фотография", "Походы", "Йога"}
-    users = search_users_db(current_city="Москва", min_age=25, max_age=35, online_only=True,
-                            interest_filters=interest_filters, max_distance_km=15)
-    if not users:
-        txt += "Ничего не найдено по заданным фильтрам."
-    else:
-        txt += f"Найдено {len(users)} совпадений:\n\n"
-        for u in users:
-            score = interest_score(set(u["interests"]), interest_filters)
-            txt += f"💫 {u['name']}, {u['age']} лет — {', '.join(u['interests'])}\n"
-            txt += f"📍 {u['distance_km']} км · {'Онлайн' if u['is_online'] else 'Оффлайн'} · Совпадение: {score}%\n\n"
-    await call.message.edit_text(txt, parse_mode="Markdown")
-
 @dp.callback_query(lambda c: c.data == "modes_menu")
 async def cb_modes_menu(call: types.CallbackQuery):
     txt = "💫 РЕЖИМЫ ПОИСКА\n──────────────\n\n"
@@ -750,16 +733,6 @@ async def cb_modes_menu(call: types.CallbackQuery):
     txt += "🎯 Точный поиск — подбор по фильтрам и интересам\n[🔍 Настроить фильтры]\n\n"
     txt += "🎯 Совпадение дня — 1 лучший матч специально для вас\n[💖 Посмотреть]\n\n"
     txt += "📍 Люди рядом — карта/список\n[🗺 На карте] [👥 Списком]\n"
-    await call.message.edit_text(txt)
-
-@dp.callback_query(lambda c: c.data == "people_map")
-async def cb_people_map(call: types.CallbackQuery):
-    # Покажем людей с расстояниями — имитация карты
-    users = search_users_db(current_city="Москва", min_age=18, max_age=100)
-    txt = "🗺 ЛЮДИ НА КАРТЕ\n──────────────\n📍 Вы здесь · Москва, центр\n\n"
-    for u in sorted(users, key=lambda x: x["distance_km"] or 999)[:10]:
-        txt += f"👤 {u['name']}, {u['age']} — {', '.join(u['interests']) if u['interests'] else '—'} · {u['distance_km']} км\n"
-    txt += "\n[👥 Показать списком] [🔍 Обновить] [📍 Моя геопозиция]"
     await call.message.edit_text(txt)
 
 @dp.callback_query(lambda c: c.data == "groups_events")
@@ -866,7 +839,7 @@ async def cb_event_join(call: types.CallbackQuery):
 async def cb_favorites(call: types.CallbackQuery):
     my_id = get_user_id_by_tg(call.from_user.id)
     cursor.execute("""
-    SELECT u.id, u.name, u.age, u.city, u.distance_km, u.is_online
+    SELECT u.id, u.name, u.age, u.city
     FROM users u JOIN favorites f ON u.id = f.fav_user_id
     WHERE f.user_id = ?
     ORDER BY f.added_at DESC
@@ -884,137 +857,6 @@ async def cb_favorites(call: types.CallbackQuery):
         txt += f"📍 {dist} км · {'Онлайн' if online else 'Не в сети'}\n\n"
     txt += "[✏️ Редактировать] [❌ Очистить]"
     await call.message.edit_text(txt)
-
-# Просмотр случайного профиля
-@dp.callback_query(lambda c: c.data == "random_profile")
-async def cb_random_profile(call: types.CallbackQuery):
-    # Возьмём случайного пользователя из города
-    cursor.execute("SELECT id FROM users WHERE city = ?", ("Москва",))
-    ids = [r[0] for r in cursor.fetchall()]
-    if not ids:
-        await call.message.edit_text("Профили не найдены.")
-        return
-    uid = random.choice(ids)
-    prof = user_profile_dict(uid)
-    if not prof:
-        await call.message.edit_text("Не удалось загрузить профиль.")
-        return
-    txt = f"💫 {prof['name']}, {prof['age']} лет\n"
-    txt += f"{'⭐ Премиум' if prof['distance_km'] and prof['distance_km']<=2 else ''}\n"
-    txt += f"📍 В {prof['distance_km']} км\n"
-    txt += f"💬 О себе:\n{prof['about']}\n\n"
-    txt += "🎯 Ваши совпадения:\n"
-    # в демо: мои интересы фиксированы
-    my_interests = {"Фотография", "Походы"}
-    score = interest_score(set(prof['interests']), my_interests)
-    for it in prof['interests']:
-        txt += f"✅ {it}\n"
-    txt += f"\nСовпадение: {score}%"
-    await call.message.edit_text(txt, reply_markup=profile_actions_kb(uid))
-
-# Обработка добавления в избранное
-@dp.callback_query(lambda c: c.data.startswith("fav_"))
-async def cb_fav(call: types.CallbackQuery):
-    fav_id = int(call.data.split("_")[-1])
-    my_id = get_user_id_by_tg(call.from_user.id)
-    cursor.execute("INSERT OR IGNORE INTO favorites (user_id, fav_user_id) VALUES (?, ?)", (my_id, fav_id))
-    conn.commit()
-    await call.answer("Добавлено в избранное.", show_alert=False)
-
-# Написать (пока просто уведомление)
-@dp.callback_query(lambda c: c.data.startswith("write_"))
-async def cb_write(call: types.CallbackQuery):
-    uid = int(call.data.split("_")[-1])
-    prof = user_profile_dict(uid)
-    await call.answer(f"Открываю чат с {prof.get('name','пользователем')} (пример).", show_alert=True)
-
-# Пропустить
-@dp.callback_query(lambda c: c.data.startswith("skip_"))
-async def cb_skip(call: types.CallbackQuery):
-    await call.answer("Пропустили профиль.", show_alert=False)
-
-# Совпадение дня — лучший матч
-@dp.callback_query(lambda c: c.data == "match_of_day" or c.data == "match_day")
-async def cb_match_of_day(call: types.CallbackQuery):
-    # Возьмём мои интересы как пример
-    my_interests = {"Фотография", "Походы", "Путешествия"}
-    # Ищем в городе
-    users = search_users_db(current_city="Москва")
-    best = None
-    best_score = -1
-    for u in users:
-        score = interest_score(set(u["interests"]), my_interests)
-        if score > best_score:
-            best_score = score
-            best = u
-    if not best:
-        await call.message.edit_text("Совпадение дня не найдено.")
-        return
-    prof = best
-    txt = "💖 СОВПАДЕНИЕ ДНЯ\n┌───────────────\n"
-    txt += f"│ **{prof['name']}, {prof['age']} лет**\n│ 🏙 {prof['city']}\n│\n│ 💬 О себе:\n│ «{prof['about']}»\n│\n│ 🎯 Ваши совпадения:\n"
-    # Список совпадений
-    for it in set(prof['interests']).intersection(my_interests):
-        txt += f"│ ✅ {it}\n"
-    txt += f"│\n│ 📍 В {prof['distance_km']} км\n│ ⭐ Премиум-пользователь\n└───────────────\n"
-    
-    await call.message.edit_text(txt, reply_markup=InlineKeyboardMarkup().add(
-        InlineKeyboardButton("💌 Написать", callback_data=f"write_{prof['id']}"),
-        InlineKeyboardButton("❤️ В избранное", callback_data=f"fav_{prof['id']}"),
-        InlineKeyboardButton("😐 Пропустить", callback_data=f"skip_{prof['id']}")
-    ), parse_mode="Markdown")
-
-# Обработчик текстовых команд: /profile <id> — показать профиль по id (для админских нужд)
-@dp.message(Command("profile"))
-async def cmd_profile(message: types.Message):
-    parts = message.text.split()
-    if len(parts) < 2:
-        await message.reply("Использование: /profile <user_id>")
-        return
-    try:
-        uid = int(parts[1])
-    except ValueError:
-        await message.reply("Нужно число.")
-        return
-    prof = user_profile_dict(uid)
-    if not prof:
-        await message.reply("Профиль не найден.")
-        return
-    txt = f"💫 {prof['name']}, {prof['age']} лет\n"
-    txt += f"{prof['city']} · {prof['distance_km']} км\n"
-    txt += f"Интересы: {', '.join(prof['interests'])}\n\n{prof['about']}"
-    await message.reply(txt, reply_markup=profile_actions_kb(uid))
-
-# Команда /search — быстрый пример поиска по аргументам
-@dp.message(Command("search"))
-async def cmd_search(message: types.Message):
-    # Пример: /search Москва 25 35 Фото,Походы online
-    parts = message.text.split(maxsplit=4)
-    if len(parts) < 4:
-        await message.reply("Пример: /search <город> <мин_возраст> <макс_возраст> [интерес1,интерес2] [online]")
-        return
-    city = parts[1]
-    try:
-        min_age = int(parts[2]); max_age = int(parts[3])
-    except:
-        await message.reply("Возраст должен быть числами.")
-        return
-    interest_filters = set()
-    online_only = False
-    if len(parts) >= 5:
-        tail = parts[4]
-        if "online" in tail.lower():
-            online_only = True
-        if "," in tail:
-            interest_filters = {x.strip() for x in tail.split(",") if x.strip()}
-    users = search_users_db(current_city=city, min_age=min_age, max_age=max_age, online_only=online_only, interest_filters=interest_filters or None)
-    if not users:
-        await message.reply("Совпадений не найдено.")
-        return
-    txt = f"Найдено {len(users)}:\n\n"
-    for u in users[:20]:
-        txt += f"{u['name']}, {u['age']} — {', '.join(u['interests'])}\n"
-    await message.reply(txt)
 
 async def main():
     await dp.start_polling(bot)
