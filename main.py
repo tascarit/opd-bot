@@ -17,7 +17,7 @@ from aiogram.utils.formatting import Text, Bold, Code, Italic
 # ---------------------------
 # Настройки
 # ---------------------------
-API_TOKEN = "6302312900:AAH_4TYzdtgMDera9VbYLIxd6h0yGsKtG_k"  # <- вставь сюда токен
+API_TOKEN = ""
 DB_PATH = "bot.db"
 logging.basicConfig(level=logging.INFO)
 
@@ -866,4 +866,5 @@ async def main():
 # ---------------------------
 if __name__ == "__main__":
     print("Bot starting...")
+
     asyncio.run(main())
